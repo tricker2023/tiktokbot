@@ -17,34 +17,77 @@ function fmtNum(n) {
 }
 
 async function getTikTokInfo(username) {
-  username = username.replace(/^@/, "").trim();
+  username = username.replace(/^@/, "").trim().toLowerCase();
   try {
-    const url = `https://www.tiktok.com/api/user/detail/?uniqueId=${encodeURIComponent(username)}&aid=1988&app_language=vi-VN&app_name=tiktok_web`;
+    // Dùng Tikhub API (không bị chặn bởi TikTok)
+    const url = `https://api.tikhub.io/api/v1/tiktok/app/v3/fetch_user_profile?username=${encodeURIComponent(username)}`;
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-        "Referer": "https://www.tiktok.com/",
+        "Authorization": `Bearer ${process.env.TIKHUB_TOKEN || ""}`,
+        "User-Agent": "Mozilla/5.0",
       },
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const user  = data?.userInfo?.user  || {};
-    const stats = data?.userInfo?.stats || {};
-    if (!user.uniqueId) return null;
-    const isLive = !!user.roomId && user.roomId !== "0";
+
+    if (res.ok) {
+      const data = await res.json();
+      const user  = data?.data?.userInfo?.user  || {};
+      const stats = data?.data?.userInfo?.stats || {};
+      if (user.uniqueId) {
+        const isLive = !!user.roomId && user.roomId !== "0";
+        return {
+          username:  user.uniqueId,
+          nickname:  user.nickname  || "",
+          userId:    user.id        || "",
+          followers: stats.followerCount  || 0,
+          following: stats.followingCount || 0,
+          likes:     stats.heartCount     || 0,
+          videos:    stats.videoCount     || 0,
+          isLive,
+          liveUrl: isLive ? `https://www.tiktok.com/@${user.uniqueId}/live` : null,
+        };
+      }
+    }
+
+    // Fallback: scrape trang profile TikTok
+    const profileUrl = `https://www.tiktok.com/@${username}`;
+    const r2 = await fetch(profileUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Accept": "text/html",
+        "Accept-Language": "vi-VN,vi;q=0.9",
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!r2.ok) return null;
+    const html = await r2.text();
+
+    // Tìm JSON data trong HTML
+    const match = html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/);
+    if (!match) return null;
+
+    const json = JSON.parse(match[1]);
+    const userData = json?.["__DEFAULT_SCOPE__"]?.["webapp.user-detail"]?.userInfo;
+    if (!userData) return null;
+
+    const user2  = userData.user  || {};
+    const stats2 = userData.stats || {};
+    const isLive2 = !!user2.roomId && user2.roomId !== "0";
+
     return {
-      username:  user.uniqueId,
-      nickname:  user.nickname  || "",
-      userId:    user.id        || "",
-      followers: stats.followerCount  || 0,
-      following: stats.followingCount || 0,
-      likes:     stats.heartCount     || 0,
-      videos:    stats.videoCount     || 0,
-      isLive,
-      liveUrl: isLive ? `https://www.tiktok.com/@${user.uniqueId}/live` : null,
+      username:  user2.uniqueId  || username,
+      nickname:  user2.nickname  || "",
+      userId:    user2.id        || "",
+      followers: stats2.followerCount  || 0,
+      following: stats2.followingCount || 0,
+      likes:     stats2.heartCount     || 0,
+      videos:    stats2.videoCount     || 0,
+      isLive:    isLive2,
+      liveUrl:   isLive2 ? `https://www.tiktok.com/@${user2.uniqueId}/live` : null,
     };
   } catch (e) {
+    console.error("getTikTokInfo error:", e.message);
     return null;
   }
 }
@@ -82,7 +125,7 @@ bot.command("check", async (ctx) => {
   if (!username) return ctx.reply("⚠️ Dùng: /check <username>");
   await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
   const info = await getTikTokInfo(username);
-  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}`);
+  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nHãy kiểm tra lại username có đúng không.`);
   ctx.reply(buildMsg(info));
 });
 
@@ -92,7 +135,7 @@ bot.command("addtiktok", async (ctx) => {
   const chatId = String(ctx.chat.id);
   await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
   const info = await getTikTokInfo(username);
-  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}`);
+  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nHãy kiểm tra lại username có đúng không.`);
   await redis.sadd(watchKey(chatId), username);
   await redis.set(statusKey(chatId, username), info.isLive ? "live" : "offline");
   ctx.reply(
@@ -125,7 +168,6 @@ bot.command("list", async (ctx) => {
   ctx.reply(`📋 Đang theo dõi (${members.length}):\n\n${lines.join("\n")}`);
 });
 
-// Init bot 1 lần, tái sử dụng giữa các request (Vercel cache)
 let botReady = false;
 
 module.exports = async (req, res) => {
@@ -133,20 +175,16 @@ module.exports = async (req, res) => {
     return res.status(200).send("Bot is running!");
   }
   try {
-    // Init bot nếu chưa init
     if (!botReady) {
       await bot.init();
       botReady = true;
     }
-
-    // Đọc body thủ công
     const buf = await new Promise((resolve, reject) => {
       let data = "";
       req.on("data", (chunk) => (data += chunk));
       req.on("end", () => resolve(data));
       req.on("error", reject);
     });
-
     const update = JSON.parse(buf);
     await bot.handleUpdate(update);
     res.status(200).send("ok");
