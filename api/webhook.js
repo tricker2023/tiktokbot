@@ -125,22 +125,33 @@ bot.command("list", async (ctx) => {
   ctx.reply(`📋 Đang theo dõi (${members.length}):\n\n${lines.join("\n")}`);
 });
 
+// Init bot 1 lần, tái sử dụng giữa các request (Vercel cache)
+let botReady = false;
+
 module.exports = async (req, res) => {
   if (req.method === "GET") {
     return res.status(200).send("Bot is running!");
   }
   try {
+    // Init bot nếu chưa init
+    if (!botReady) {
+      await bot.init();
+      botReady = true;
+    }
+
+    // Đọc body thủ công
     const buf = await new Promise((resolve, reject) => {
       let data = "";
       req.on("data", (chunk) => (data += chunk));
       req.on("end", () => resolve(data));
       req.on("error", reject);
     });
+
     const update = JSON.parse(buf);
     await bot.handleUpdate(update);
     res.status(200).send("ok");
   } catch (err) {
-    console.error(err);
+    console.error("Webhook error:", err);
     res.status(200).send("ok");
   }
 };
