@@ -19,51 +19,18 @@ function fmtNum(n) {
 async function getTikTokInfo(username) {
   username = username.replace(/^@/, "").trim().toLowerCase();
   try {
-    // Dùng Tikhub API (không bị chặn bởi TikTok)
-    const url = `https://api.tikhub.io/api/v1/tiktok/app/v3/fetch_user_profile?username=${encodeURIComponent(username)}`;
-    const res = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${process.env.TIKHUB_TOKEN || ""}`,
-        "User-Agent": "Mozilla/5.0",
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const user  = data?.data?.userInfo?.user  || {};
-      const stats = data?.data?.userInfo?.stats || {};
-      if (user.uniqueId) {
-        const isLive = !!user.roomId && user.roomId !== "0";
-        return {
-          username:  user.uniqueId,
-          nickname:  user.nickname  || "",
-          userId:    user.id        || "",
-          followers: stats.followerCount  || 0,
-          following: stats.followingCount || 0,
-          likes:     stats.heartCount     || 0,
-          videos:    stats.videoCount     || 0,
-          isLive,
-          liveUrl: isLive ? `https://www.tiktok.com/@${user.uniqueId}/live` : null,
-        };
-      }
-    }
-
-    // Fallback: scrape trang profile TikTok
     const profileUrl = `https://www.tiktok.com/@${username}`;
-    const r2 = await fetch(profileUrl, {
+    const r = await fetch(profileUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        "Accept": "text/html",
+        "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "vi-VN,vi;q=0.9",
       },
       signal: AbortSignal.timeout(15000),
     });
+    if (!r.ok) return null;
+    const html = await r.text();
 
-    if (!r2.ok) return null;
-    const html = await r2.text();
-
-    // Tìm JSON data trong HTML
     const match = html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/);
     if (!match) return null;
 
@@ -71,20 +38,27 @@ async function getTikTokInfo(username) {
     const userData = json?.["__DEFAULT_SCOPE__"]?.["webapp.user-detail"]?.userInfo;
     if (!userData) return null;
 
-    const user2  = userData.user  || {};
-    const stats2 = userData.stats || {};
-    const isLive2 = !!user2.roomId && user2.roomId !== "0";
+    const user  = userData.user  || {};
+    const stats = userData.stats || {};
+
+    // Check LIVE qua roomId
+    const isLive = !!user.roomId && user.roomId !== "0" && user.roomId !== "";
 
     return {
-      username:  user2.uniqueId  || username,
-      nickname:  user2.nickname  || "",
-      userId:    user2.id        || "",
-      followers: stats2.followerCount  || 0,
-      following: stats2.followingCount || 0,
-      likes:     stats2.heartCount     || 0,
-      videos:    stats2.videoCount     || 0,
-      isLive:    isLive2,
-      liveUrl:   isLive2 ? `https://www.tiktok.com/@${user2.uniqueId}/live` : null,
+      username:  user.uniqueId  || username,
+      nickname:  user.nickname  || "",
+      userId:    user.id        || "",
+      followers: stats.followerCount  || 0,
+      following: stats.followingCount || 0,
+      likes:     stats.heartCount     || 0,
+      videos:    stats.videoCount     || 0,
+      friends:   stats.friendCount    || 0,
+      isLive,
+      roomId:    user.roomId || "",
+      avatar:    user.avatarLarger || user.avatarMedium || "",
+      verified:  !!user.verified,
+      private:   !!user.privateAccount,
+      liveUrl:   isLive ? `https://www.tiktok.com/@${user.uniqueId}/live` : null,
     };
   } catch (e) {
     console.error("getTikTokInfo error:", e.message);
@@ -94,19 +68,38 @@ async function getTikTokInfo(username) {
 
 function buildMsg(info) {
   const now = new Date().toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
+  const verified = info.verified ? " ✅" : "";
+  const privacy  = info.private  ? "🔒 Private" : "🌐 Public";
   return (
     `📊 KẾT QUẢ KIỂM TRA TIKTOK\n` +
-    `👤 Username: @${info.username}\n` +
+    `👤 Username: @${info.username}${verified}\n` +
     `📛 Tên: ${info.nickname}\n` +
-    `🆔 ID: ${info.userId}\n\n` +
+    `🆔 ID: ${info.userId}\n` +
+    `${privacy}\n\n` +
     `👥 Followers: ${fmtNum(info.followers)}\n` +
     `👣 Đang theo dõi: ${fmtNum(info.following)}\n` +
     `❤️ Lượt thích: ${fmtNum(info.likes)}\n` +
-    `🎬 Số video: ${fmtNum(info.videos)}\n\n` +
-    `📡 Trạng thái: ${info.isLive ? "🔴 ĐANG LIVE" : "⭕ Không LIVE"}\n` +
+    `🎬 Số video: ${fmtNum(info.videos)}\n` +
+    `👫 Bạn bè: ${fmtNum(info.friends)}\n\n` +
+    `📡 Trạng thái: ${info.isLive ? "✅ LIVE" : "❌ Không LIVE"}\n` +
     `🕐 Cập nhật: ${now}` +
     (info.isLive ? `\n\n🔗 ${info.liveUrl}` : "")
   );
+}
+
+async function sendTikTokInfo(ctx, info, prefix = "") {
+  const caption = (prefix ? prefix + "\n\n" : "") + buildMsg(info);
+  try {
+    // Gửi ảnh avatar kèm caption
+    if (info.avatar) {
+      await ctx.replyWithPhoto(info.avatar, { caption });
+    } else {
+      await ctx.reply(caption);
+    }
+  } catch (e) {
+    // Nếu gửi ảnh lỗi thì gửi text
+    await ctx.reply(caption);
+  }
 }
 
 bot.command("start", (ctx) =>
@@ -123,25 +116,27 @@ bot.command("start", (ctx) =>
 bot.command("check", async (ctx) => {
   const username = ctx.match?.trim().replace(/^@/, "");
   if (!username) return ctx.reply("⚠️ Dùng: /check <username>");
-  await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
+  const loadMsg = await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
   const info = await getTikTokInfo(username);
-  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nHãy kiểm tra lại username có đúng không.`);
-  ctx.reply(buildMsg(info));
+  await ctx.api.deleteMessage(ctx.chat.id, loadMsg.message_id).catch(() => {});
+  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nKiểm tra lại username có đúng không.`);
+  await sendTikTokInfo(ctx, info);
 });
 
 bot.command("addtiktok", async (ctx) => {
   const username = ctx.match?.trim().replace(/^@/, "").toLowerCase();
   if (!username) return ctx.reply("⚠️ Dùng: /addtiktok <username>");
   const chatId = String(ctx.chat.id);
-  await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
+  const loadMsg = await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
   const info = await getTikTokInfo(username);
-  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nHãy kiểm tra lại username có đúng không.`);
+  await ctx.api.deleteMessage(ctx.chat.id, loadMsg.message_id).catch(() => {});
+  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nKiểm tra lại username có đúng không.`);
   await redis.sadd(watchKey(chatId), username);
   await redis.set(statusKey(chatId, username), info.isLive ? "live" : "offline");
-  ctx.reply(
-    `✅ Đã thêm theo dõi!\n\n` + buildMsg(info) +
-    `\n\n${info.isLive ? "🔴 Đang LIVE! Sẽ báo khi kết thúc." : "⭕ Chưa LIVE. Sẽ báo khi bắt đầu."}`
-  );
+  const statusText = info.isLive
+    ? `🔴 Đang LIVE! Bot sẽ thông báo khi kết thúc.`
+    : `⭕ Chưa LIVE. Bot sẽ thông báo khi bắt đầu LIVE.`;
+  await sendTikTokInfo(ctx, info, `✅ ĐÃ LƯU THÀNH CÔNG!\n🔔 Bạn sẽ nhận thông báo khi @${username} thay đổi!\n\n${statusText}`);
 });
 
 bot.command("removetiktok", async (ctx) => {
