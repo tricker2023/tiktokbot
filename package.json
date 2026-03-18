@@ -1,0 +1,14 @@
+{
+  "name": "tiktok-live-bot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.28.0",
+    "grammy": "^1.26.0",
+    "node-fetch": "^3.3.2"
+  }
+}
