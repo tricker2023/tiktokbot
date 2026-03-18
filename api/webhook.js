@@ -214,7 +214,7 @@ bot.command("check", async (ctx) => {
   const loadMsg = await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
   const info = await getInfo(username);
   await ctx.api.deleteMessage(ctx.chat.id, loadMsg.message_id).catch(() => {});
-  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nKiểm tra lại username có đúng không.`);
+  if (!info) return ctx.reply(`💀 Tài khoản @${username} không tồn tại hoặc đã bị DIE!`);
   await sendInfo(ctx, info);
 });
 
@@ -225,7 +225,7 @@ bot.command("addtiktok", async (ctx) => {
   const loadMsg = await ctx.reply(`🔍 Đang kiểm tra @${username}...`);
   const info = await getInfo(username);
   await ctx.api.deleteMessage(ctx.chat.id, loadMsg.message_id).catch(() => {});
-  if (!info) return ctx.reply(`❌ Không tìm thấy @${username}\n\nKiểm tra lại username có đúng không.`);
+  if (!info) return ctx.reply(`💀 Tài khoản @${username} không tồn tại hoặc đã bị DIE!`);
   await redis.sadd(watchKey(chatId), username);
   await redis.set(statusKey(chatId, username), info.isLive ? "live" : "offline");
   const statusText = info.isLive
